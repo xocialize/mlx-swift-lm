@@ -22,16 +22,20 @@ extension Gemma3Model {
     /// text-encoder use: the caller supplies a combined causal+padding mask and
     /// the per-layer sliding-window/global mask selection used by
     /// `callAsFunction(_:mask:cache:)` is intentionally bypassed.
+    /// Throws `CancellationError` between layers when the surrounding task is cancelled —
+    /// the per-layer `eval` already bounds each step, so a cancel (user quit / engine preempt)
+    /// lands within ~one layer's compute instead of riding the whole 48-layer forward.
     public func allHiddenStates(
         _ inputs: MLXArray,
         mask: MLXFast.ScaledDotProductAttentionMaskMode
-    ) -> [MLXArray] {
+    ) throws -> [MLXArray] {
         var h = embedTokens(inputs)
         let scale = MLXArray(sqrt(Float(config.hiddenSize)), dtype: .bfloat16)
         h = h * scale.asType(h.dtype)
 
         var states: [MLXArray] = [h]
         for layer in layers {
+            try Task.checkCancellation()
             h = layer(h, mask: mask, cache: nil)
             // Per-layer materialization keeps each Metal command buffer below the
             // macOS GPU watchdog (~10s) — without it, all layers fuse into one
@@ -49,7 +53,7 @@ extension Gemma3TextModel {
     public func allHiddenStates(
         _ inputs: MLXArray,
         mask: MLXFast.ScaledDotProductAttentionMaskMode
-    ) -> [MLXArray] {
-        model.allHiddenStates(inputs, mask: mask)
+    ) throws -> [MLXArray] {
+        try model.allHiddenStates(inputs, mask: mask)
     }
 }
